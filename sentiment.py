@@ -29,10 +29,7 @@ from tweepy import API, Stream, OAuthHandler, TweepError
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from bs4 import BeautifulSoup
-try:
-    from elasticsearch5 import Elasticsearch
-except ImportError:
-    from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch
 from random import randint, randrange
 from datetime import datetime
 from newspaper import Article, ArticleException
@@ -41,20 +38,17 @@ from newspaper import Article, ArticleException
 from config import *
 
 
-STOCKSIGHT_VERSION = '0.1-b.10'
+STOCKSIGHT_VERSION = '0.1-b.12'
 __version__ = STOCKSIGHT_VERSION
 
 IS_PY3 = sys.version_info >= (3, 0)
 
 if not IS_PY3:
-    print("Sorry, stocksight does not work with Python 2.")
+    print("Sorry, stocksight requires Python 3.")
     sys.exit(1)
 
 # sentiment text-processing url
 sentimentURL = 'http://text-processing.com/api/sentiment/'
-
-# stocksight website url data collector
-stocksightURL = 'https://stocksight.diskoverspace.com/data_collector.php'
 
 # tweet id list
 tweet_ids = []
@@ -228,23 +222,22 @@ class TweetStreamListener(StreamListener):
                     subjectivity = (subjectivity + tweet_urls_subjectivity) / 2
             
 
-            if not args.noelasticsearch:
-                logger.info("Adding tweet to elasticsearch")
-                # add twitter data and sentiment info to elasticsearch
-                es.index(index=args.index,
-                        doc_type="tweet",
-                        body={"author": screen_name,
-                            "location": location,
-                            "language": language,
-                            "friends": friends,
-                            "followers": followers,
-                            "statuses": statuses,
-                            "date": created_date,
-                            "message": text_filtered,
-                            "tweet_id": tweetid,
-                            "polarity": polarity,
-                            "subjectivity": subjectivity,
-                            "sentiment": sentiment})
+            logger.info("Adding tweet to elasticsearch")
+            # add twitter data and sentiment info to elasticsearch
+            es.index(index=args.index,
+                    doc_type="tweet",
+                    body={"author": screen_name,
+                        "location": location,
+                        "language": language,
+                        "friends": friends,
+                        "followers": followers,
+                        "statuses": statuses,
+                        "date": created_date,
+                        "message": text_filtered,
+                        "tweet_id": tweetid,
+                        "polarity": polarity,
+                        "subjectivity": subjectivity,
+                        "sentiment": sentiment})
 
             # randomly sleep to stagger request time
             time.sleep(randrange(2,5))
@@ -329,17 +322,16 @@ class NewsHeadlineListener:
                     # get sentiment values
                     polarity, subjectivity, sentiment = sentiment_analysis(htext)
 
-                    if not args.noelasticsearch:
-                        logger.info("Adding news headline to elasticsearch")
-                        # add news headline data and sentiment info to elasticsearch
-                        es.index(index=args.index,
-                                doc_type="newsheadline",
-                                body={"date": datenow,
-                                    "location": htext_url,
-                                    "message": htext,
-                                    "polarity": polarity,
-                                    "subjectivity": subjectivity,
-                                    "sentiment": sentiment})
+                    logger.info("Adding news headline to elasticsearch")
+                    # add news headline data and sentiment info to elasticsearch
+                    es.index(index=args.index,
+                            doc_type="newsheadline",
+                            body={"date": datenow,
+                                "location": htext_url,
+                                "message": htext,
+                                "polarity": polarity,
+                                "subjectivity": subjectivity,
+                                "sentiment": sentiment})
 
             logger.info("Will get news headlines again in %s sec..." % self.frequency)
             time.sleep(self.frequency)
@@ -478,7 +470,6 @@ def sentiment_analysis(text):
     uses sentiment polarity from TextBlob, VADER Sentiment and
     sentiment from text-processing URL
     could be made better :)
-    Uploads sentiment to stocksight website.
     """
 
     # pass text into sentiment url
@@ -513,19 +504,6 @@ def sentiment_analysis(text):
             sentiment = "positive"
         else:
             sentiment = "neutral"
-
-    # calculate average and upload to sentiment website
-    if args.upload:
-        if sentiment_url:
-            neg_avg = (text_vs['neg'] + neg_url) / 2
-            pos_avg = (text_vs['pos'] + pos_url) / 2
-            neutral_avg = (text_vs['neu'] + neu_url) / 2
-            upload_sentiment(neg_avg, pos_avg, neutral_avg)
-        else:
-            neg_avg = text_vs['neg']
-            pos_avg = text_vs['pos']
-            neutral_avg = text_vs['neu']
-            upload_sentiment(neg_avg, pos_avg, neutral_avg)
 
     # calculate average polarity from TextBlob and VADER
     polarity = (text_tb.sentiment.polarity + text_vs['compound']) / 2
@@ -648,31 +626,6 @@ def get_twitter_users_from_file(file):
     return twitter_users
 
 
-def upload_sentiment(neg, pos, neu):
-    # upload sentiment to stocksight website
-    global prev_time
-    global sentiment_avg
-    # update averages
-    sentiment_avg[0] = (sentiment_avg[0] + neg) / 2
-    sentiment_avg[1] = (sentiment_avg[1] + pos) / 2
-    sentiment_avg[2] = (sentiment_avg[2] + neu) / 2
-    # don't upload more than once every 10 seconds for tweets
-    time_now = time.time()
-    if not args.newsheadlines and time_now - prev_time < 10:
-        return
-    prev_time = time_now
-    payload = {'token':stocksight_token, 'symbol':args.symbol, 'neg':sentiment_avg[0], 'pos':sentiment_avg[1], 'neu':sentiment_avg[2]}
-    try:
-        post = requests.post(stocksightURL, data=payload)
-    except requests.exceptions.RequestException as re:
-        logger.error("Exception: requests exception uploading sentiment to stocksight caused by %s" % re)
-        raise
-    if post.status_code == 200:
-        logger.info("Uploaded stock sentiment to stocksight website")
-    else:
-        logger.warning("Can't upload sentiment to stocksight website caused by %s" % post.status_code)
-
-
 if __name__ == '__main__':
     # parse cli args
     parser = argparse.ArgumentParser()
@@ -681,10 +634,7 @@ if __name__ == '__main__':
     parser.add_argument("-d", "--delindex", action="store_true",
                         help="Delete existing Elasticsearch index first")
     parser.add_argument("-s", "--symbol", metavar="SYMBOL", required=True,
-                        help="Stock symbol you are interesed in searching for, example: TSLA "
-                             "This is used as the symbol tag on stocksight website. " 
-                             "Could also be set to a tag name like 'elonmusk' or 'elon' etc. " 
-                             "Cannot contain spaces and more than 25 characters.")
+                        help="Stock symbol you are interesed in searching for, example: TSLA")
     parser.add_argument("-k", "--keywords", metavar="KEYWORDS",
                         help="Use keywords to search for in Tweets instead of feeds. "
                              "Separated by comma, case insensitive, spaces are ANDs commas are ORs. "
@@ -702,13 +652,9 @@ if __name__ == '__main__':
     parser.add_argument("--frequency", metavar="FREQUENCY", default=120, type=int,
                         help="How often in seconds to retrieve news headlines (default: 120 sec)")
     parser.add_argument("--followlinks", action="store_true",
-                        help="Follow links on news headlines and scrape relevant text from landing page")
-    parser.add_argument("-U", "--upload", action="store_true",
-                        help="Upload sentiment to stocksight website (BETA)")   
+                        help="Follow links on news headlines and scrape relevant text from landing page") 
     parser.add_argument("-w", "--websentiment", action="store_true",
                         help="Get sentiment results from text processing website")                  
-    parser.add_argument("--noelasticsearch", action="store_true",
-                        help="Don't connect or add new docs to Elasticsearch")
     parser.add_argument("--overridetokensreq", metavar="TOKEN", nargs="+",
                         help="Override nltk required tokens from config, separate with space")
     parser.add_argument("--overridetokensignore", metavar="TOKEN", nargs="+",
@@ -723,12 +669,6 @@ if __name__ == '__main__':
                         version="stocksight v%s" % STOCKSIGHT_VERSION,
                         help="Prints version and exits")
     args = parser.parse_args()
-
-    # check symbol for illegal characters and length
-    if ' ' in args.symbol:
-        sys.exit("Symbol cannot contain any spaces")
-    if len(args.symbol) > 25:
-        sys.exit("Symbol cannot be more than 25 characters")
 
     # set up logging
     logger = logging.getLogger('stocksight')
@@ -790,138 +730,136 @@ if __name__ == '__main__':
     |_   _|_| |___|___|_,_|_   _|_|_  |_|_|_|  
       |_|                   |_|   |___|                
           :) = +$   :( = -$    v%s
-    GitHub repo https://github.com/shirosaidev/stocksight
-    StockSight website https://stocksight.diskoverspace.com
+     https://github.com/shirosaidev/stocksight
             \033[0m""" % (color, STOCKSIGHT_VERSION)
         print(banner + '\n')
 
-    if not args.noelasticsearch:
-        # create instance of elasticsearch
-        es = Elasticsearch(hosts=[{'host': elasticsearch_host, 'port': elasticsearch_port}],
-                   http_auth=(elasticsearch_user, elasticsearch_password))
+    # create instance of elasticsearch
+    es = Elasticsearch(hosts=[{'host': elasticsearch_host, 'port': elasticsearch_port}],
+                http_auth=(elasticsearch_user, elasticsearch_password))
 
-        # set up elasticsearch mappings and create index
-        mappings = {
-            "mappings": {
-                "tweet": {
-                    "properties": {
-                        "author": {
-                            "type": "string",
-                            "fields": {
-                                "keyword": {
-                                    "type": "keyword"
-                                }
+    # set up elasticsearch mappings and create index
+    mappings = {
+        "mappings": {
+            "tweet": {
+                "properties": {
+                    "author": {
+                        "type": "string",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword"
                             }
-                        },
-                        "location": {
-                            "type": "string",
-                            "fields": {
-                                "keyword": {
-                                    "type": "keyword"
-                                }
+                        }
+                    },
+                    "location": {
+                        "type": "string",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword"
                             }
-                        },
-                        "language": {
-                            "type": "string",
-                            "fields": {
-                                "keyword": {
-                                    "type": "keyword"
-                                }
+                        }
+                    },
+                    "language": {
+                        "type": "string",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword"
                             }
-                        },
-                        "friends": {
-                            "type": "long"
-                        },
-                        "followers": {
-                            "type": "long"
-                        },
-                        "statuses": {
-                            "type": "long"
-                        },
-                        "date": {
-                            "type": "date"
-                        },
-                        "message": {
-                            "type": "string",
-                            "fields": {
-                                "english": {
-                                    "type": "string",
-                                    "analyzer": "english"
-                                },
-                                "keyword": {
-                                    "type": "keyword"
-                                }
+                        }
+                    },
+                    "friends": {
+                        "type": "long"
+                    },
+                    "followers": {
+                        "type": "long"
+                    },
+                    "statuses": {
+                        "type": "long"
+                    },
+                    "date": {
+                        "type": "date"
+                    },
+                    "message": {
+                        "type": "string",
+                        "fields": {
+                            "english": {
+                                "type": "string",
+                                "analyzer": "english"
+                            },
+                            "keyword": {
+                                "type": "keyword"
                             }
-                        },
-                        "tweet_id": {
-                            "type": "long"
-                        },
-                        "polarity": {
-                            "type": "float"
-                        },
-                        "subjectivity": {
-                            "type": "float"
-                        },
-                        "sentiment": {
-                            "type": "string",
-                            "fields": {
-                                "keyword": {
-                                    "type": "keyword"
-                                }
+                        }
+                    },
+                    "tweet_id": {
+                        "type": "long"
+                    },
+                    "polarity": {
+                        "type": "float"
+                    },
+                    "subjectivity": {
+                        "type": "float"
+                    },
+                    "sentiment": {
+                        "type": "string",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword"
                             }
                         }
                     }
-                },
-                "newsheadline": {
-                    "properties": {
-                        "date": {
-                            "type": "date"
-                        },
-                        "location": {
-                            "type": "string",
-                            "fields": {
-                                "keyword": {
-                                    "type": "keyword"
-                                }
+                }
+            },
+            "newsheadline": {
+                "properties": {
+                    "date": {
+                        "type": "date"
+                    },
+                    "location": {
+                        "type": "string",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword"
                             }
-                        },
-                        "message": {
-                            "type": "string",
-                            "fields": {
-                                "english": {
-                                    "type": "string",
-                                    "analyzer": "english"
-                                },
-                                "keyword": {
-                                    "type": "keyword"
-                                }
+                        }
+                    },
+                    "message": {
+                        "type": "string",
+                        "fields": {
+                            "english": {
+                                "type": "string",
+                                "analyzer": "english"
+                            },
+                            "keyword": {
+                                "type": "keyword"
                             }
-                        },
-                        "polarity": {
-                            "type": "float"
-                        },
-                        "subjectivity": {
-                            "type": "float"
-                        },
-                        "sentiment": {
-                            "type": "string",
-                            "fields": {
-                                "keyword": {
-                                    "type": "keyword"
-                                }
+                        }
+                    },
+                    "polarity": {
+                        "type": "float"
+                    },
+                    "subjectivity": {
+                        "type": "float"
+                    },
+                    "sentiment": {
+                        "type": "string",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword"
                             }
                         }
                     }
                 }
             }
         }
-    
-        if args.delindex:
-            logger.info('Deleting existing Elasticsearch index ' + args.index)
-            es.indices.delete(index=args.index, ignore=[400, 404])
+    }
 
-        logger.info('Creating new Elasticsearch index or using existing ' + args.index)
-        es.indices.create(index=args.index, body=mappings, ignore=[400, 404])
+    if args.delindex:
+        logger.info('Deleting existing Elasticsearch index ' + args.index)
+        es.indices.delete(index=args.index, ignore=[400, 404])
+
+    logger.info('Creating new Elasticsearch index or using existing ' + args.index)
+    es.indices.create(index=args.index, body=mappings, ignore=[400, 404])
 
     # check if we need to override any tokens
     if args.overridetokensreq:
